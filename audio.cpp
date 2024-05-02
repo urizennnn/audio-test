@@ -1,11 +1,15 @@
+#include <cstdint>
 #include <cstring>
+#include <fstream>
+#include <iostream>
+#include <vector>
 #include <stdlib.h>
 #include <stdio.h>	
 #include <portaudio.h>
 
 #define SAMPLE_RATE 44100
 #define FRAMES_PER_BUFFER 512
-
+const int NUM_CHANNELS = 2;
 
 using namespace std;
 
@@ -30,35 +34,20 @@ static inline float max(float a,float b){
 	return b;
 }
 
-static int pastestCallback (const void* inputBuffer, void* outputBuffer, unsigned long framesPerBuffer, const PaStreamCallbackTimeInfo* timeInfo, PaStreamCallbackFlags statusFlags, void* userData) {
-	float* in = (float*) inputBuffer;
-	(void)outputBuffer;
-	int dispSize = 100;
-	printf("\r");
+static int recordAudio (const void* inputBuffer, void* outputBuffer, unsigned long framesPerBuffer, const PaStreamCallbackTimeInfo* timeInfo, PaStreamCallbackFlags statusFlags, void* userData) {
+	std::vector<short>* recordedSamples = (std::vector<short>*)userData;
+    const short* rptr = (const short*)inputBuffer;
+    unsigned long framesLeft = framesPerBuffer;
+    size_t maxSamples = recordedSamples->size() + framesPerBuffer;
+    recordedSamples->reserve(maxSamples);
 
+    while (framesLeft > 0) {
+        recordedSamples->push_back(*rptr);
+        rptr++;
+        framesLeft--;
+    }
 
-	float vol_1 = 0;
-	float vol_2 = 0;
-
-	for (unsigned long i = 0; i < framesPerBuffer *2; i +=2){
-		vol_1 = max(vol_1,absloute(in[i]));
-		vol_2 = (max(vol_2, absloute(in[i+1])));
-	}
-	for (int i= 0 ;i <dispSize;i++){
-		float barProportion = i / (float)dispSize;
-		if (barProportion <=vol_1 && barProportion<=vol_2){
-			printf("█");//full block
-		}else if (barProportion <=vol_1){
-			printf("▀");//top half
-		}else if (barProportion <=vol_2) {
-			printf("▄");// bottom half
-		}else {
-			printf(" ");
-		}
-	}
-
-	fflush(stdout);
-		return 0;
+    return paContinue;
 }
 
 
@@ -113,16 +102,74 @@ const PaDeviceInfo* deviceInfo;
 
 
 	PaStream* stream;
-	err = Pa_OpenStream(&stream, &inputParameters, &outputParameters, SAMPLE_RATE, FRAMES_PER_BUFFER, paNoFlag,pastestCallback , NULL);
+	vector<short> recorded;
+	err = Pa_OpenStream(&stream, &inputParameters, &outputParameters, SAMPLE_RATE, FRAMES_PER_BUFFER, paNoFlag,recordAudio , &recorded);
 	checkError(err);
 
 	err = Pa_StartStream(stream);
 	checkError(err);
 
-	Pa_Sleep(10 * 1000);
+	cout << "Recording Audio... Click anywhere to stop" << endl;
+	cin.get();
 
 	err=Pa_StopStream(stream);
 	checkError(err);
+
+	ofstream wavFile("recorded_audio.wav",ios::binary);
+	checkError(err);
+
+	const int numSamples = static_cast<int>(recorded.size());
+    const int numChannels = NUM_CHANNELS;
+    const int bytesPerSample = 2; // 16 bits per sample
+    const int byteRate = SAMPLE_RATE * numChannels * bytesPerSample;
+    const int blockAlign = numChannels * bytesPerSample;
+    const int dataChunkSize = numSamples * numChannels * bytesPerSample;
+
+
+
+uint32_t temp32;
+uint16_t temp16;
+
+wavFile.write("RIFF", 4);
+
+temp32 = static_cast<uint32_t>(dataChunkSize + 36);
+wavFile.write(reinterpret_cast<const char*>(&temp32), sizeof(uint32_t));
+
+wavFile.write("WAVE", 4);
+wavFile.write("fmt ", 4);
+
+temp32 = 16;
+wavFile.write(reinterpret_cast<const char*>(&temp32), sizeof(uint32_t));
+
+temp16 = 1; // PCM
+wavFile.write(reinterpret_cast<const char*>(&temp16), sizeof(uint16_t));
+
+temp16 = numChannels;
+wavFile.write(reinterpret_cast<const char*>(&temp16), sizeof(uint16_t));
+
+temp32 = SAMPLE_RATE;
+wavFile.write(reinterpret_cast<const char*>(&temp32), sizeof(uint32_t));
+
+temp32 = byteRate;
+wavFile.write(reinterpret_cast<const char*>(&temp32), sizeof(uint32_t));
+
+temp16 = blockAlign;
+wavFile.write(reinterpret_cast<const char*>(&temp16), sizeof(uint16_t));
+
+temp16 = 16; // Bits per sample
+wavFile.write(reinterpret_cast<const char*>(&temp16), sizeof(uint16_t));
+
+wavFile.write("data", 4);
+
+temp32 = dataChunkSize;
+wavFile.write(reinterpret_cast<const char*>(&temp32), sizeof(uint32_t));
+
+// Write the audio data
+wavFile.write(reinterpret_cast<const char*>(recorded.data()), dataChunkSize);
+
+wavFile.close();
+
+
 
 	err=Pa_CloseStream(stream);
 	checkError(err);
